@@ -108,6 +108,8 @@ impl CpusWrapper {
                 for proc_ in cpus.iter_mut() {
                     let cpu_usage = compute_usage_of_cpu(proc_, cpu_info, offset);
                     proc_.inner.update(cpu_usage, Arc::clone(&proc_data));
+                    proc_.inner.set_cpu_times(CpuTimes::new(cpu_info, offset));
+
                     percentage += proc_.inner.cpu_usage();
 
                     offset += libc::CPU_STATE_MAX as isize;
