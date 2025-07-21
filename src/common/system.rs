@@ -2752,6 +2752,36 @@ pub struct Cpu {
 }
 
 impl Cpu {
+    /// User time of CPU usage.
+    pub fn user(&self) -> i64 {
+        self.inner.user()
+    }
+
+    /// System time of CPU usage.
+    pub fn system(&self) -> i64 {
+        self.inner.system()
+    }
+
+    /// Nice time of CPU usage.
+    pub fn nice(&self) -> i64 {
+        self.inner.nice()
+    }
+
+    /// Idle time of CPU usage.
+    pub fn idle(&self) -> i64 {
+        self.inner.idle()
+    }
+
+    /// Returns the time spent in use.
+    pub fn in_use(&self) -> i64 {
+        self.inner.in_use()
+    }
+
+    /// Returns the total time spent.
+    pub fn total(&self) -> i64 {
+        self.inner.total()
+    }
+
     /// Returns this CPU's usage.
     ///
     /// Note: You'll need to refresh it at least twice (diff between the first and the second is

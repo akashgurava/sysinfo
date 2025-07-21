@@ -11,6 +11,58 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[derive(Default)]
+pub struct CpuTimes {
+    user: i64,
+    system: i64,
+    nice: i64,
+    idle: i64,
+}
+
+impl CpuTimes {
+    fn new(cpu_info: *mut i32, offset: isize) -> Self {
+        unsafe {
+            let user = *cpu_info.offset(offset + libc::CPU_STATE_USER as isize) as i64;
+            let system = *cpu_info.offset(offset + libc::CPU_STATE_SYSTEM as isize) as i64;
+            let nice = *cpu_info.offset(offset + libc::CPU_STATE_NICE as isize) as i64;
+            let idle = *cpu_info.offset(offset + libc::CPU_STATE_IDLE as isize) as i64;
+
+            CpuTimes {
+                user,
+                system,
+                nice,
+                idle,
+            }
+        }
+    }
+
+    pub fn user(&self) -> i64 {
+        self.user
+    }
+
+    pub fn system(&self) -> i64 {
+        self.system
+    }
+
+    pub fn nice(&self) -> i64 {
+        self.nice
+    }
+
+    pub fn idle(&self) -> i64 {
+        self.idle
+    }
+
+    pub fn in_use(&self) -> i64 {
+        self.user
+            .saturating_add(self.system)
+            .saturating_add(self.nice)
+    }
+
+    pub fn total(&self) -> i64 {
+        self.in_use().saturating_add(self.idle)
+    }
+}
+
 pub(crate) struct CpusWrapper {
     pub(crate) global_cpu: CpuUsage,
     pub(crate) cpus: Vec<Cpu>,
@@ -140,6 +192,7 @@ pub(crate) struct CpuInner {
     vendor_id: String,
     brand: String,
     usage: CpuUsage,
+    cpu_times: CpuTimes,
 }
 
 impl CpuInner {
@@ -157,6 +210,7 @@ impl CpuInner {
                 data: cpu_data,
                 frequency,
             },
+            cpu_times: CpuTimes::default(),
             vendor_id,
             brand,
         }
@@ -164,6 +218,10 @@ impl CpuInner {
 
     pub(crate) fn set_cpu_usage(&mut self, cpu_usage: f32) {
         self.usage.set_cpu_usage(cpu_usage);
+    }
+
+    pub(crate) fn set_cpu_times(&mut self, cpu_times: CpuTimes) {
+        self.cpu_times = cpu_times;
     }
 
     pub(crate) fn update(&mut self, cpu_usage: f32, cpu_data: Arc<CpuData>) {
@@ -177,6 +235,30 @@ impl CpuInner {
 
     pub(crate) fn set_frequency(&mut self, frequency: u64) {
         self.usage.frequency = frequency;
+    }
+
+    pub(crate) fn user(&self) -> i64 {
+        self.cpu_times.user()
+    }
+
+    pub(crate) fn system(&self) -> i64 {
+        self.cpu_times.system()
+    }
+
+    pub(crate) fn nice(&self) -> i64 {
+        self.cpu_times.nice()
+    }
+
+    pub(crate) fn idle(&self) -> i64 {
+        self.cpu_times.idle()
+    }
+
+    pub(crate) fn in_use(&self) -> i64 {
+        self.cpu_times.in_use()
+    }
+
+    pub(crate) fn total(&self) -> i64 {
+        self.cpu_times.total()
     }
 
     pub(crate) fn cpu_usage(&self) -> f32 {
@@ -305,6 +387,9 @@ pub(crate) fn update_cpu_usage<F: FnOnce(Arc<CpuData>, *mut i32) -> (f32, usize)
             &mut num_cpu_info as *mut u32,
         ) == libc::KERN_SUCCESS
         {
+            println!("{}", num_cpu_u);
+            println!("{:?}", cpu_info);
+            println!("{}", num_cpu_info);
             let (total_percentage, len) =
                 f(Arc::new(CpuData::new(cpu_info, num_cpu_info)), cpu_info);
             total_cpu_usage = total_percentage / len as f32;
@@ -354,6 +439,7 @@ pub(crate) fn init_cpus(
             if refresh_kind.cpu_usage() {
                 let cpu_usage = compute_usage_of_cpu(&cpu, cpu_info, offset);
                 cpu.inner.set_cpu_usage(cpu_usage);
+                cpu.inner.set_cpu_times(CpuTimes::new(cpu_info, offset));
                 percentage += cpu.cpu_usage();
             }
             cpus.push(cpu);
