@@ -2777,6 +2777,26 @@ impl Cpu {
         self.inner.cpu_usage()
     }
 
+    /// Returns the time spent by the CPU in user mode.
+    pub fn user_time(&self) -> i64 {
+        self.inner.user_time()
+    }
+
+    /// Returns the time spent by the CPU in system mode.
+    pub fn system_time(&self) -> i64 {
+        self.inner.system_time()
+    }
+
+    /// Returns the time spent by the CPU in nice mode.
+    pub fn nice_time(&self) -> i64 {
+        self.inner.nice_time()
+    }
+
+    /// Returns the time spent by the CPU in idle mode.
+    pub fn idle_time(&self) -> i64 {
+        self.inner.idle_time()
+    }
+
     /// Returns this CPU's name.
     ///
     /// ```no_run

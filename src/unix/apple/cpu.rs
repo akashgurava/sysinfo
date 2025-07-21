@@ -52,15 +52,38 @@ impl CpusWrapper {
             self.last_update = Some(Instant::now());
             update_cpu_usage(port, &mut self.global_cpu, |proc_data, cpu_info| {
                 let mut percentage = 0f32;
+                let mut total_user_time = 0i64;
+                let mut total_system_time = 0i64;
+                let mut total_nice_time = 0i64;
+                let mut total_idle_time = 0i64;
                 let mut offset = 0;
                 for proc_ in cpus.iter_mut() {
-                    let cpu_usage = compute_usage_of_cpu(proc_, cpu_info, offset);
-                    proc_.inner.update(cpu_usage, Arc::clone(&proc_data));
+                    let (cpu_usage, user_time, system_time, nice_time, idle_time) =
+                        compute_usage_of_cpu(proc_, cpu_info, offset);
+                    proc_.inner.update(
+                        cpu_usage,
+                        user_time,
+                        system_time,
+                        nice_time,
+                        idle_time,
+                        Arc::clone(&proc_data),
+                    );
                     percentage += proc_.inner.cpu_usage();
+                    total_user_time += user_time;
+                    total_system_time += system_time;
+                    total_nice_time += nice_time;
+                    total_idle_time += idle_time;
 
                     offset += libc::CPU_STATE_MAX as isize;
                 }
-                (percentage, cpus.len())
+                (
+                    percentage,
+                    total_user_time,
+                    total_system_time,
+                    total_nice_time,
+                    total_idle_time,
+                    cpus.len(),
+                )
             });
         }
     }
@@ -115,6 +138,11 @@ pub(crate) struct CpuUsage {
     data: Arc<CpuData>,
     // Cannot be frequency for each CPU apparently so we store it in the CPU usage...
     frequency: u64,
+    // Raw CPU time values
+    user_time: i64,
+    system_time: i64,
+    nice_time: i64,
+    idle_time: i64,
 }
 
 impl CpuUsage {
@@ -123,6 +151,10 @@ impl CpuUsage {
             percent: 0.,
             data: Arc::new(CpuData::new(std::ptr::null_mut(), 0)),
             frequency: 0,
+            user_time: 0,
+            system_time: 0,
+            nice_time: 0,
+            idle_time: 0,
         }
     }
 
@@ -156,18 +188,30 @@ impl CpuInner {
                 percent: 0.,
                 data: cpu_data,
                 frequency,
+                user_time: 0,
+                system_time: 0,
+                nice_time: 0,
+                idle_time: 0,
             },
             vendor_id,
             brand,
         }
     }
 
-    pub(crate) fn set_cpu_usage(&mut self, cpu_usage: f32) {
-        self.usage.set_cpu_usage(cpu_usage);
-    }
-
-    pub(crate) fn update(&mut self, cpu_usage: f32, cpu_data: Arc<CpuData>) {
+    pub(crate) fn update(
+        &mut self,
+        cpu_usage: f32,
+        user_time: i64,
+        system_time: i64,
+        nice_time: i64,
+        idle_time: i64,
+        cpu_data: Arc<CpuData>,
+    ) {
         self.usage.percent = cpu_usage;
+        self.usage.user_time = user_time;
+        self.usage.system_time = system_time;
+        self.usage.nice_time = nice_time;
+        self.usage.idle_time = idle_time;
         self.usage.data = cpu_data;
     }
 
@@ -180,7 +224,23 @@ impl CpuInner {
     }
 
     pub(crate) fn cpu_usage(&self) -> f32 {
-        self.usage.percent()
+        self.usage.percent
+    }
+
+    pub(crate) fn user_time(&self) -> i64 {
+        self.usage.user_time
+    }
+
+    pub(crate) fn system_time(&self) -> i64 {
+        self.usage.system_time
+    }
+
+    pub(crate) fn nice_time(&self) -> i64 {
+        self.usage.nice_time
+    }
+
+    pub(crate) fn idle_time(&self) -> i64 {
+        self.usage.idle_time
     }
 
     pub(crate) fn name(&self) -> &str {
@@ -241,13 +301,15 @@ pub(crate) fn physical_core_count() -> Option<usize> {
 }
 
 #[inline]
-fn get_in_use(cpu_info: *mut i32, offset: isize) -> i64 {
+fn get_in_use(cpu_info: *mut i32, offset: isize) -> (i64, i64, i64, i64, i64) {
     unsafe {
         let user = *cpu_info.offset(offset + libc::CPU_STATE_USER as isize) as i64;
         let system = *cpu_info.offset(offset + libc::CPU_STATE_SYSTEM as isize) as i64;
         let nice = *cpu_info.offset(offset + libc::CPU_STATE_NICE as isize) as i64;
+        let idle = *cpu_info.offset(offset + libc::CPU_STATE_IDLE as isize) as i64;
 
-        user.saturating_add(system).saturating_add(nice)
+        let total = user.saturating_add(system).saturating_add(nice);
+        (total, user, system, nice, idle)
     }
 }
 
@@ -256,36 +318,55 @@ fn get_idle(cpu_info: *mut i32, offset: isize) -> i32 {
     unsafe { *cpu_info.offset(offset + libc::CPU_STATE_IDLE as isize) }
 }
 
-pub(crate) fn compute_usage_of_cpu(proc_: &Cpu, cpu_info: *mut i32, offset: isize) -> f32 {
+pub(crate) fn compute_usage_of_cpu(
+    proc_: &Cpu,
+    cpu_info: *mut i32,
+    offset: isize,
+) -> (f32, i64, i64, i64, i64) {
     let old_cpu_info = proc_.inner.data().cpu_info.0;
     let in_use;
     let idle;
+    let user_time;
+    let system_time;
+    let nice_time;
+    let idle_time;
 
     // In case we are initializing cpus, there is no "old value" yet.
     if std::ptr::eq(old_cpu_info, cpu_info) {
-        in_use = get_in_use(cpu_info, offset);
-        idle = get_idle(cpu_info, offset);
+        let (total, user, system, nice, idle_val) = get_in_use(cpu_info, offset);
+        in_use = total;
+        idle = idle_val as i32;
+        user_time = user;
+        system_time = system;
+        nice_time = nice;
+        idle_time = idle_val;
     } else {
-        let new_in_use = get_in_use(cpu_info, offset);
-        let old_in_use = get_in_use(old_cpu_info, offset);
+        let (new_total, new_user, new_system, new_nice, new_idle) = get_in_use(cpu_info, offset);
+        let (old_total, old_user, old_system, old_nice, old_idle) =
+            get_in_use(old_cpu_info, offset);
 
-        let new_idle = get_idle(cpu_info, offset);
-        let old_idle = get_idle(old_cpu_info, offset);
-
-        in_use = new_in_use.saturating_sub(old_in_use);
-        idle = new_idle.saturating_sub(old_idle) as _;
+        in_use = new_total.saturating_sub(old_total);
+        idle = (new_idle.saturating_sub(old_idle)) as i32;
+        user_time = new_user.saturating_sub(old_user);
+        system_time = new_system.saturating_sub(old_system);
+        nice_time = new_nice.saturating_sub(old_nice);
+        idle_time = new_idle.saturating_sub(old_idle);
     }
     let total = in_use.saturating_add(idle as _);
     let usage = (in_use as f32 / total as f32) * 100.;
-    if usage.is_nan() {
+    let final_usage = if usage.is_nan() {
         // If divided by zero, avoid returning a NaN
         0.
     } else {
         usage
-    }
+    };
+
+    (final_usage, user_time, system_time, nice_time, idle_time)
 }
 
-pub(crate) fn update_cpu_usage<F: FnOnce(Arc<CpuData>, *mut i32) -> (f32, usize)>(
+pub(crate) fn update_cpu_usage<
+    F: FnOnce(Arc<CpuData>, *mut i32) -> (f32, i64, i64, i64, i64, usize),
+>(
     port: libc::mach_port_t,
     global_cpu: &mut CpuUsage,
     f: F,
@@ -295,6 +376,10 @@ pub(crate) fn update_cpu_usage<F: FnOnce(Arc<CpuData>, *mut i32) -> (f32, usize)
     let mut num_cpu_info = 0u32;
 
     let mut total_cpu_usage = 0f32;
+    let mut total_user_time = 0i64;
+    let mut total_system_time = 0i64;
+    let mut total_nice_time = 0i64;
+    let mut total_idle_time = 0i64;
 
     unsafe {
         if host_processor_info(
@@ -305,11 +390,19 @@ pub(crate) fn update_cpu_usage<F: FnOnce(Arc<CpuData>, *mut i32) -> (f32, usize)
             &mut num_cpu_info as *mut u32,
         ) == libc::KERN_SUCCESS
         {
-            let (total_percentage, len) =
+            let (total_percentage, user_time, system_time, nice_time, idle_time, len) =
                 f(Arc::new(CpuData::new(cpu_info, num_cpu_info)), cpu_info);
             total_cpu_usage = total_percentage / len as f32;
+            total_user_time = user_time;
+            total_system_time = system_time;
+            total_nice_time = nice_time;
+            total_idle_time = idle_time;
         }
         global_cpu.set_cpu_usage(total_cpu_usage);
+        global_cpu.user_time = total_user_time;
+        global_cpu.system_time = total_system_time;
+        global_cpu.nice_time = total_nice_time;
+        global_cpu.idle_time = total_idle_time;
     }
 }
 
@@ -339,7 +432,11 @@ pub(crate) fn init_cpus(
         }
     }
     update_cpu_usage(port, global_cpu, |proc_data, cpu_info| {
-        let mut percentage = 0f32;
+        let mut final_usage = 0f32;
+        let mut user_time = 0i64;
+        let mut system_time = 0i64;
+        let mut nice_time = 0i64;
+        let mut idle_time = 0i64;
         let mut offset = 0;
         for i in 0..num_cpu {
             let mut cpu = Cpu {
@@ -352,15 +449,29 @@ pub(crate) fn init_cpus(
                 ),
             };
             if refresh_kind.cpu_usage() {
-                let cpu_usage = compute_usage_of_cpu(&cpu, cpu_info, offset);
-                cpu.inner.set_cpu_usage(cpu_usage);
-                percentage += cpu.cpu_usage();
+                (final_usage, user_time, system_time, nice_time, idle_time) =
+                    compute_usage_of_cpu(&cpu, cpu_info, offset);
+                cpu.inner.update(
+                    final_usage,
+                    user_time,
+                    system_time,
+                    nice_time,
+                    idle_time,
+                    Arc::clone(&proc_data),
+                );
             }
             cpus.push(cpu);
 
             offset += libc::CPU_STATE_MAX as isize;
         }
-        (percentage, cpus.len())
+        (
+            final_usage,
+            user_time,
+            system_time,
+            nice_time,
+            idle_time,
+            cpus.len(),
+        )
     });
 }
 
