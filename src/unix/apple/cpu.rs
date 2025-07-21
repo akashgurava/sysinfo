@@ -387,9 +387,6 @@ pub(crate) fn update_cpu_usage<F: FnOnce(Arc<CpuData>, *mut i32) -> (f32, usize)
             &mut num_cpu_info as *mut u32,
         ) == libc::KERN_SUCCESS
         {
-            println!("{}", num_cpu_u);
-            println!("{:?}", cpu_info);
-            println!("{}", num_cpu_info);
             let (total_percentage, len) =
                 f(Arc::new(CpuData::new(cpu_info, num_cpu_info)), cpu_info);
             total_cpu_usage = total_percentage / len as f32;
